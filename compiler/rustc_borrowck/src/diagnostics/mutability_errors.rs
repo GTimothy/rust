@@ -614,7 +614,9 @@ impl<'infcx, 'tcx> MirBorrowckCtxt<'_, 'infcx, 'tcx> {
                 err: &'a mut Diag<'infcx>,
                 ty: Ty<'tcx>,
                 suggested: bool,
+                infcx: &'a rustc_infer::infer::InferCtxt<'tcx>,
             }
+
             impl<'a, 'infcx, 'tcx> Visitor<'tcx> for SuggestIndexOperatorAlternativeVisitor<'a, 'infcx, 'tcx> {
                 fn visit_stmt(&mut self, stmt: &'tcx hir::Stmt<'tcx>) {
                     hir::intravisit::walk_stmt(self, stmt);
@@ -631,17 +633,150 @@ impl<'infcx, 'tcx> MirBorrowckCtxt<'_, 'infcx, 'tcx> {
                     {
                         // val[index] = rv;
                         // ---------- place
-                        self.err.multipart_suggestions(
-                            format!(
-                                "use `.insert()` to insert a value into a `{}`, `.get_mut()` \
-                                to modify it, or the entry API for more flexibility",
-                                self.ty,
-                            ),
-                            vec![
+                        let is_borrowed_index = if let Ok(snippet) =
+                            self.infcx.tcx.sess.source_map().span_to_snippet(index.span)
+                        {
+                            snippet.starts_with('&')
+                        } else {
+                            false // fallback
+                        };
+                        // we know ty is a map, with a key type at walk distance 2.
+                        let key_type = self.ty.walk().nth(1).unwrap().expect_ty();
+                        let is_borrowed_key = key_type.is_ref();
+
+                        if is_borrowed_key {
+                            if is_borrowed_index {
+                                self.err.multipart_suggestion(
+                                    format!(
+                                        "use `.insert()` to insert a value into a `{}`",
+                                        self.ty
+                                    ),
+                                    vec![
+                                        // val.insert(index, rv);
+                                        (
+                                            val.span.shrink_to_hi().with_hi(index.span.lo()),
+                                            ".insert(".to_string(),
+                                        ),
+                                        (
+                                            index.span.shrink_to_hi().with_hi(rv.span.lo()),
+                                            ", ".to_string(),
+                                        ),
+                                        (rv.span.shrink_to_hi(), ")".to_string()),
+                                    ],
+                                    Applicability::MaybeIncorrect,
+                                );
+                                self.err.multipart_suggestion(
+                                    format!("use `.get_mut()` to modify a `{}`", self.ty,),
+                                    vec![
+                                        // if let Some(v) = val.get_mut(index) { *v = rv; }
+                                        (
+                                            val.span.shrink_to_lo(),
+                                            "if let Some(val) = ".to_string(),
+                                        ),
+                                        (
+                                            val.span.shrink_to_hi().with_hi(index.span.lo()),
+                                            ".get_mut(&".to_string(),
+                                        ),
+                                        (
+                                            index.span.shrink_to_hi().with_hi(place.span.hi()),
+                                            ") { *val".to_string(),
+                                        ),
+                                        (rv.span.shrink_to_hi(), "; }".to_string()),
+                                    ],
+                                    Applicability::MaybeIncorrect,
+                                );
+                                self.err.multipart_suggestion(
+                                    format!(
+                                        "use the entry API to modify a `{}` for more flexibility",
+                                        self.ty
+                                    ),
+                                    vec![
+                                        // let x = val.entry(index).or_insert(rv);
+                                        (val.span.shrink_to_lo(), "let val = ".to_string()),
+                                        (
+                                            val.span.shrink_to_hi().with_hi(index.span.lo()),
+                                            ".entry(".to_string(),
+                                        ),
+                                        (
+                                            index.span.shrink_to_hi().with_hi(rv.span.lo()),
+                                            ").or_insert(".to_string(),
+                                        ),
+                                        (rv.span.shrink_to_hi(), ")".to_string()),
+                                    ],
+                                    Applicability::MaybeIncorrect,
+                                );
+                                self.suggested = true;
+                            } else {
+                                self.err.multipart_suggestion(
+                                    format!(
+                                        "use `.insert()` to insert a value into a `{}`",
+                                        self.ty
+                                    ),
+                                    vec![
+                                        // val.insert(index, rv);
+                                        (
+                                            val.span.shrink_to_hi().with_hi(index.span.lo()),
+                                            ".insert(&".to_string(),
+                                        ),
+                                        (
+                                            index.span.shrink_to_hi().with_hi(rv.span.lo()),
+                                            ", ".to_string(),
+                                        ),
+                                        (rv.span.shrink_to_hi(), ")".to_string()),
+                                    ],
+                                    Applicability::MaybeIncorrect,
+                                );
+                                self.err.multipart_suggestion(
+                                    format!("use `.get_mut()` to modify a `{}`", self.ty,),
+                                    vec![
+                                        // if let Some(v) = val.get_mut(index) { *v = rv; }
+                                        (
+                                            val.span.shrink_to_lo(),
+                                            "if let Some(val) = ".to_string(),
+                                        ),
+                                        (
+                                            val.span.shrink_to_hi().with_hi(index.span.lo()),
+                                            ".get_mut(&&".to_string(),
+                                        ),
+                                        (
+                                            index.span.shrink_to_hi().with_hi(place.span.hi()),
+                                            ") { *val".to_string(),
+                                        ),
+                                        (rv.span.shrink_to_hi(), "; }".to_string()),
+                                    ],
+                                    Applicability::MaybeIncorrect,
+                                );
+                                self.err.multipart_suggestion(
+                                    format!(
+                                        "use the entry API to modify a `{}` for more flexibility",
+                                        self.ty
+                                    ),
+                                    vec![
+                                        // let x = val.entry(index).or_insert(rv);
+                                        (val.span.shrink_to_lo(), "let val = ".to_string()),
+                                        (
+                                            val.span.shrink_to_hi().with_hi(index.span.lo()),
+                                            ".entry(&".to_string(),
+                                        ),
+                                        (
+                                            index.span.shrink_to_hi().with_hi(rv.span.lo()),
+                                            ").or_insert(".to_string(),
+                                        ),
+                                        (rv.span.shrink_to_hi(), ")".to_string()),
+                                    ],
+                                    Applicability::MaybeIncorrect,
+                                );
+                                self.suggested = true;
+                            }
+                        } else if is_borrowed_index {
+                            self.err.multipart_suggestion(
+                                format!("use `.insert()` to insert a value into a `{}`", self.ty),
                                 vec![
                                     // val.insert(index, rv);
                                     (
-                                        val.span.shrink_to_hi().with_hi(index.span.lo()),
+                                        val.span
+                                            .shrink_to_hi()
+                                            .with_hi(index.span.lo() + BytePos(1)),
                                         ".insert(".to_string(),
                                     ),
                                     (
@@ -650,6 +785,10 @@ impl<'infcx, 'tcx> MirBorrowckCtxt<'_, 'infcx, 'tcx> {
                                     ),
                                     (rv.span.shrink_to_hi(), ")".to_string()),
                                 ],
+                                Applicability::MaybeIncorrect,
+                            );
+                            self.err.multipart_suggestion(
+                                format!("use `.get_mut()` to modify a `{}`", self.ty,),
                                 vec![
                                     // if let Some(v) = val.get_mut(index) { *v = rv; }
                                     (val.span.shrink_to_lo(), "if let Some(val) = ".to_string()),
@@ -663,6 +802,70 @@ impl<'infcx, 'tcx> MirBorrowckCtxt<'_, 'infcx, 'tcx> {
                                     ),
                                     (rv.span.shrink_to_hi(), "; }".to_string()),
                                 ],
+                                Applicability::MaybeIncorrect,
+                            );
+                            self.err.multipart_suggestion(
+                                format!(
+                                    "use the entry API to modify a `{}` for more flexibility",
+                                    self.ty
+                                ),
+                                vec![
+                                    // let x = val.entry(index).or_insert(rv);
+                                    (val.span.shrink_to_lo(), "let val = ".to_string()),
+                                    (
+                                        val.span
+                                            .shrink_to_hi()
+                                            .with_hi(index.span.lo() + BytePos(1)),
+                                        ".entry(".to_string(),
+                                    ),
+                                    (
+                                        index.span.shrink_to_hi().with_hi(rv.span.lo()),
+                                        ").or_insert(".to_string(),
+                                    ),
+                                    (rv.span.shrink_to_hi(), ")".to_string()),
+                                ],
+                                Applicability::MaybeIncorrect,
+                            );
+                            self.suggested = true;
+                        } else {
+                            self.err.multipart_suggestion(
+                                format!("use `.insert()` to insert a value into a `{}`", self.ty),
+                                vec![
+                                    // val.insert(index, rv);
+                                    (
+                                        val.span.shrink_to_hi().with_hi(index.span.lo()),
+                                        ".insert(".to_string(),
+                                    ),
+                                    (
+                                        index.span.shrink_to_hi().with_hi(rv.span.lo()),
+                                        ", ".to_string(),
+                                    ),
+                                    (rv.span.shrink_to_hi(), ")".to_string()),
+                                ],
+                                Applicability::MaybeIncorrect,
+                            );
+                            self.err.multipart_suggestion(
+                                format!("use `.get_mut()` to modify a `{}`", self.ty,),
+                                vec![
+                                    // if let Some(v) = val.get_mut(index) { *v = rv; }
+                                    (val.span.shrink_to_lo(), "if let Some(val) = ".to_string()),
+                                    (
+                                        val.span.shrink_to_hi().with_hi(index.span.lo()),
+                                        ".get_mut(&".to_string(),
+                                    ),
+                                    (
+                                        index.span.shrink_to_hi().with_hi(place.span.hi()),
+                                        ") { *val".to_string(),
+                                    ),
+                                    (rv.span.shrink_to_hi(), "; }".to_string()),
+                                ],
+                                Applicability::MaybeIncorrect,
+                            );
+                            self.err.multipart_suggestion(
+                                format!(
+                                    "use the entry API to modify a `{}` for more flexibility",
+                                    self.ty
+                                ),
                                 vec![
                                     // let x = val.entry(index).or_insert(rv);
                                     (val.span.shrink_to_lo(), "let val = ".to_string()),
@@ -676,32 +879,10 @@ impl<'infcx, 'tcx> MirBorrowckCtxt<'_, 'infcx, 'tcx> {
                                     ),
                                     (rv.span.shrink_to_hi(), ")".to_string()),
                                 ],
-                            ],
-                            Applicability::MachineApplicable,
-                        );
-                        self.suggested = true;
-                    } else if let hir::ExprKind::MethodCall(_path, receiver, _, sp) = expr.kind
-                        && let hir::ExprKind::Index(val, index, _) = receiver.kind
-                        && receiver.span == self.assign_span
-                    {
-                        // val[index].path(args..);
-                        self.err.multipart_suggestion(
-                            format!("to modify a `{}` use `.get_mut()`", self.ty),
-                            vec![
-                                (val.span.shrink_to_lo(), "if let Some(val) = ".to_string()),
-                                (
-                                    val.span.shrink_to_hi().with_hi(index.span.lo()),
-                                    ".get_mut(".to_string(),
-                                ),
-                                (
-                                    index.span.shrink_to_hi().with_hi(receiver.span.hi()),
-                                    ") { val".to_string(),
-                                ),
-                                (sp.shrink_to_hi(), "; }".to_string()),
-                            ],
-                            Applicability::MachineApplicable,
-                        );
-                        self.suggested = true;
+                                Applicability::MaybeIncorrect,
+                            );
+                            self.suggested = true;
+                        }
                     }
                 }
             }
@@ -714,6 +895,7 @@ impl<'infcx, 'tcx> MirBorrowckCtxt<'_, 'infcx, 'tcx> {
                 err,
                 ty,
                 suggested: false,
+                infcx: self.infcx,
             };
             v.visit_body(&body);
             if !v.suggested {
