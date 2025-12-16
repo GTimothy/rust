@@ -691,7 +691,7 @@ impl<'infcx, 'tcx> MirBorrowckCtxt<'_, 'infcx, 'tcx> {
                                         self.ty
                                     ),
                                     vec![
-                                        // let x = val.entry(index).or_insert(rv);
+                                        // let x = val.entry(index).insert_entry(rv);
                                         (val.span.shrink_to_lo(), "let val = ".to_string()),
                                         (
                                             val.span.shrink_to_hi().with_hi(index.span.lo()),
@@ -699,7 +699,7 @@ impl<'infcx, 'tcx> MirBorrowckCtxt<'_, 'infcx, 'tcx> {
                                         ),
                                         (
                                             index.span.shrink_to_hi().with_hi(rv.span.lo()),
-                                            ").or_insert(".to_string(),
+                                            ").insert_entry(".to_string(),
                                         ),
                                         (rv.span.shrink_to_hi(), ")".to_string()),
                                     ],
@@ -752,7 +752,7 @@ impl<'infcx, 'tcx> MirBorrowckCtxt<'_, 'infcx, 'tcx> {
                                         self.ty
                                     ),
                                     vec![
-                                        // let x = val.entry(index).or_insert(rv);
+                                        // let x = val.entry(index).insert_entry(rv);
                                         (val.span.shrink_to_lo(), "let val = ".to_string()),
                                         (
                                             val.span.shrink_to_hi().with_hi(index.span.lo()),
@@ -760,7 +760,7 @@ impl<'infcx, 'tcx> MirBorrowckCtxt<'_, 'infcx, 'tcx> {
                                         ),
                                         (
                                             index.span.shrink_to_hi().with_hi(rv.span.lo()),
-                                            ").or_insert(".to_string(),
+                                            ").insert_entry(".to_string(),
                                         ),
                                         (rv.span.shrink_to_hi(), ")".to_string()),
                                     ],
@@ -810,7 +810,7 @@ impl<'infcx, 'tcx> MirBorrowckCtxt<'_, 'infcx, 'tcx> {
                                     self.ty
                                 ),
                                 vec![
-                                    // let x = val.entry(index).or_insert(rv);
+                                    // let x = val.entry(index).insert_entry(rv);
                                     (val.span.shrink_to_lo(), "let val = ".to_string()),
                                     (
                                         val.span
@@ -820,7 +820,7 @@ impl<'infcx, 'tcx> MirBorrowckCtxt<'_, 'infcx, 'tcx> {
                                     ),
                                     (
                                         index.span.shrink_to_hi().with_hi(rv.span.lo()),
-                                        ").or_insert(".to_string(),
+                                        ").insert_entry(".to_string(),
                                     ),
                                     (rv.span.shrink_to_hi(), ")".to_string()),
                                 ],
@@ -867,7 +867,7 @@ impl<'infcx, 'tcx> MirBorrowckCtxt<'_, 'infcx, 'tcx> {
                                     self.ty
                                 ),
                                 vec![
-                                    // let x = val.entry(index).or_insert(rv);
+                                    // let x = val.entry(index).insert_entry(rv);
                                     (val.span.shrink_to_lo(), "let val = ".to_string()),
                                     (
                                         val.span.shrink_to_hi().with_hi(index.span.lo()),
@@ -875,7 +875,7 @@ impl<'infcx, 'tcx> MirBorrowckCtxt<'_, 'infcx, 'tcx> {
                                     ),
                                     (
                                         index.span.shrink_to_hi().with_hi(rv.span.lo()),
-                                        ").or_insert(".to_string(),
+                                        ").insert_entry(".to_string(),
                                     ),
                                     (rv.span.shrink_to_hi(), ")".to_string()),
                                 ],
