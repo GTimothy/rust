@@ -696,32 +696,35 @@ impl<'infcx, 'tcx> MirBorrowckCtxt<'_, 'infcx, 'tcx> {
                         }
                         count
                     }
+
+                    // we know ty is a map, with a key type at walk distance 2.
+                    let key_type = self.ty.walk().nth(1).unwrap().expect_ty();
+                    let key_ref_depth = count_ty_refs(key_type);
+
                     if let hir::ExprKind::Assign(place, rv, _sp) = expr.kind
                         && let hir::ExprKind::Index(val, index, _) = place.kind
                         && (expr.span == self.assign_span || place.span == self.assign_span)
                     {
-                        let ref_depth_difference: usize;
-                        let _index_is_copy_clone: bool;
+                        let (prefix, gm_prefix) = {
+                            let ref_depth_difference: usize;
 
-                        if let Some(index_ty) =
-                            self.infcx.tcx.typeck(val.hir_id.owner.def_id).expr_ty_opt(index)
-                        {
-                            // we know ty is a map, with a key type at walk distance 2.
-                            let key_type = self.ty.walk().nth(1).unwrap().expect_ty();
-                            let key_ref_depth = count_ty_refs(key_type);
+                            if let Some(index_ty) =
+                                self.infcx.tcx.typeck(val.hir_id.owner.def_id).expr_ty_opt(index)
+                            {
+                                let index_ref_depth = count_ty_refs(index_ty);
+                                ref_depth_difference = index_ref_depth - key_ref_depth; //index should
+                            //be deeper than key
+                            } else {
+                                // no type ?
+                                // FIXME: unsure how to handle this case
+                                return;
+                            };
 
-                            let index_ref_depth = count_ty_refs(index_ty);
-                            ref_depth_difference = index_ref_depth - key_ref_depth; //index should
-                        //be deeper than key
-                        } else {
-                            // no type ?
-                            return;
-                        };
-
-                        // remove the exessive referencing if necessary, but get_mut requires a ref
-                        let (prefix, gm_prefix) = match ref_depth_difference {
-                            0 => (String::new(), String::from("&")),
-                            n => ("*".repeat(n), "*".repeat(n - 1)),
+                            // remove the excessive referencing if necessary, but get_mut requires a ref
+                            match ref_depth_difference {
+                                0 => (String::new(), String::from("&")),
+                                n => ("*".repeat(n), "*".repeat(n - 1)),
+                            }
                         };
 
                         self.err.multipart_suggestion(
@@ -776,6 +779,49 @@ impl<'infcx, 'tcx> MirBorrowckCtxt<'_, 'infcx, 'tcx> {
                                 (rv.span.shrink_to_hi(), ")".to_string()),
                             ],
                             Applicability::MaybeIncorrect,
+                        );
+                        self.suggested = true;
+                    } else if let hir::ExprKind::MethodCall(_path, receiver, _, sp) = expr.kind
+                        && let hir::ExprKind::Index(val, index, _) = receiver.kind
+                        && receiver.span == self.assign_span
+                    {
+                        let gm_prefix = {
+                            let ref_depth_difference: usize;
+
+                            if let Some(index_ty) =
+                                self.infcx.tcx.typeck(val.hir_id.owner.def_id).expr_ty_opt(index)
+                            {
+                                let index_ref_depth = count_ty_refs(index_ty);
+                                ref_depth_difference = index_ref_depth - key_ref_depth; //index should
+                            //be deeper than key
+                            } else {
+                                // no type ?
+                                // FIXME: unsure how to handle this case
+                                return;
+                            };
+
+                            // remove the excessive referencing if necessary, but get_mut requires a ref
+                            match ref_depth_difference {
+                                0 => String::from("&"),
+                                n => "*".repeat(n - 1),
+                            }
+                        };
+                        // val[index].path(args..);
+                        self.err.multipart_suggestion(
+                            format!("to modify a `{}` use `.get_mut()`", self.ty),
+                            vec![
+                                (val.span.shrink_to_lo(), "if let Some(val) = ".to_string()),
+                                (
+                                    val.span.shrink_to_hi().with_hi(index.span.lo()),
+                                    format!(".get_mut({gm_prefix}"),
+                                ),
+                                (
+                                    index.span.shrink_to_hi().with_hi(receiver.span.hi()),
+                                    ") { val".to_string(),
+                                ),
+                                (sp.shrink_to_hi(), "; }".to_string()),
+                            ],
+                            Applicability::MachineApplicable,
                         );
                         self.suggested = true;
                     }
