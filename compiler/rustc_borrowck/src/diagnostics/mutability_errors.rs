@@ -682,64 +682,100 @@ impl<'infcx, 'tcx> MirBorrowckCtxt<'_, 'infcx, 'tcx> {
                         }
                     };
 
-                    /// Taken straight from https://doc.rust-lang.org/nightly/nightly-rustc/clippy_utils/fn.peel_hir_ty_refs.html
-                    /// Adapted to mid using https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/ty/struct.Ty.html#method.peel_refs
-                    /// Simplified to counting only
-                    /// Peels off all references on the type. Returns the number of references
-                    /// removed.
-                    fn count_ty_refs<'tcx>(ty: Ty<'tcx>) -> usize {
-                        let mut count = 0;
-                        let mut ty = ty;
-                        while let ty::Ref(_, inner_ty, _) = ty.kind() {
-                            ty = *inner_ty;
-                            count += 1;
+                    // Lets see:
+                    // because of TypeChecking and indexing, we know: index is &Q
+                    // with K: Eq + Hash + Borrow<Q>,
+                    // with Q: Eq + Hash + ?Sized,index is a &Q with K:Borrow<Q>,
+                    //
+                    //
+                    //
+                    // there is no other constraint on the types, therefore we need to look at the
+                    // constraints of the suggestions:
+                    // pub fn get_mut<Q>(&mut self, k: &Q) -> Option<&mut V>
+                    // where
+                    //     K: Borrow<Q>,
+                    //     Q: Hash + Eq + ?Sized,
+                    //
+                    // pub fn insert(&mut self, k: K, v: V) -> Option<V>
+                    // pub fn entry(&mut self, key: K) -> Entry<'_, K, V>
+                    //
+                    // But lets note that there could be also, if imported from hashbrown:
+                    // pub fn entry_ref<'a, 'b, Q>(
+                    // &'a mut self,
+                    // key: &'b Q,
+                    // ) -> EntryRef<'a, 'b, K, Q, V, S, A>
+                    // where
+                    // Q: Hash + Equivalent<K> + ?Sized,
+
+                    /// testing if index is &K:
+                    fn index_is_borrowed_key<'tcx>(index: Ty<'tcx>, key: Ty<'tcx>) -> bool {
+                        if let ty::Ref(_, inner_ty, _) = index.kind() {
+                            *inner_ty == key
+                        } else {
+                            false
                         }
-                        count
+                    }
+                    /// checking if the key is copy clone
+                    fn key_is_copyclone<'tcx>(key: Ty<'tcx>) -> bool {
+                        key.is_trivially_pure_clone_copy()
                     }
 
                     // we know ty is a map, with a key type at walk distance 2.
                     let key_type = self.ty.walk().nth(1).unwrap().expect_ty();
-                    let key_ref_depth = count_ty_refs(key_type);
 
                     if let hir::ExprKind::Assign(place, rv, _sp) = expr.kind
                         && let hir::ExprKind::Index(val, index, _) = place.kind
                         && (expr.span == self.assign_span || place.span == self.assign_span)
                     {
-                        let (prefix, gm_prefix) = {
-                            let ref_depth_difference: usize;
-
-                            if let Some(index_ty) =
-                                self.infcx.tcx.typeck(val.hir_id.owner.def_id).expr_ty_opt(index)
-                            {
-                                let index_ref_depth = count_ty_refs(index_ty);
-                                ref_depth_difference = index_ref_depth - key_ref_depth; //index should
-                            //be deeper than key
-                            } else {
-                                // no type ?
-                                // FIXME: unsure how to handle this case
-                                return;
-                            };
-
-                            // remove the excessive referencing if necessary, but get_mut requires a ref
-                            match ref_depth_difference {
-                                0 => (String::new(), String::from("&")),
-                                n => ("*".repeat(n), "*".repeat(n - 1)),
-                            }
-                        };
-
-                        self.err.multipart_suggestion(
-                            format!("use `.insert()` to insert a value into a `{}`", self.ty),
-                            vec![
-                                // val.insert(index, rv);
-                                (
-                                    val.span.shrink_to_hi().with_hi(index.span.lo()),
-                                    format!(".insert({prefix}"),
+                        let index_ty =
+                            self.infcx.tcx.typeck(val.hir_id.owner.def_id).expr_ty(index);
+                        // only suggest `insert` and `entry` if K is copy/clone because of the signature.
+                        if index_is_borrowed_key(index_ty, key_type) && key_is_copyclone(key_type) {
+                            self.err.multipart_suggestion(
+                                format!("use `.insert()` to insert a value into a `{}`", self.ty),
+                                vec![
+                                    // val.insert(index, rv);
+                                    (
+                                        val.span
+                                            .shrink_to_hi()
+                                            .with_hi(index.span.lo() + BytePos(1)), //remove the
+                                        //leading &
+                                        format!(".insert("),
+                                    ),
+                                    (
+                                        index.span.shrink_to_hi().with_hi(rv.span.lo()),
+                                        ", ".to_string(),
+                                    ),
+                                    (rv.span.shrink_to_hi(), ")".to_string()),
+                                ],
+                                Applicability::MaybeIncorrect,
+                            );
+                            self.err.multipart_suggestion(
+                                format!(
+                                    "use the entry API to modify a `{}` for more flexibility",
+                                    self.ty
                                 ),
-                                (index.span.shrink_to_hi().with_hi(rv.span.lo()), ", ".to_string()),
-                                (rv.span.shrink_to_hi(), ")".to_string()),
-                            ],
-                            Applicability::MaybeIncorrect,
-                        );
+                                vec![
+                                    // let x = val.entry(index).insert_entry(rv);
+                                    (val.span.shrink_to_lo(), "let val = ".to_string()),
+                                    (
+                                        val.span
+                                            .shrink_to_hi()
+                                            .with_hi(index.span.lo() + BytePos(1)), //remove the
+                                        //leading &
+                                        format!(".entry("),
+                                    ),
+                                    (
+                                        index.span.shrink_to_hi().with_hi(rv.span.lo()),
+                                        ").insert_entry(".to_string(),
+                                    ),
+                                    (rv.span.shrink_to_hi(), ")".to_string()),
+                                ],
+                                Applicability::MaybeIncorrect,
+                            );
+                        }
+                        // in all cases, suggest get_mut because K:Borrow<K> or Q:Borrow<K> as a
+                        // requirement of indexing.
                         self.err.multipart_suggestion(
                             format!(
                                 "use `.get_mut()` to modify an existing key in a `{}`",
@@ -750,7 +786,7 @@ impl<'infcx, 'tcx> MirBorrowckCtxt<'_, 'infcx, 'tcx> {
                                 (val.span.shrink_to_lo(), "if let Some(val) = ".to_string()),
                                 (
                                     val.span.shrink_to_hi().with_hi(index.span.lo()),
-                                    format!(".get_mut({gm_prefix}"),
+                                    ".get_mut(".to_string(),
                                 ),
                                 (
                                     index.span.shrink_to_hi().with_hi(place.span.hi()),
@@ -760,52 +796,14 @@ impl<'infcx, 'tcx> MirBorrowckCtxt<'_, 'infcx, 'tcx> {
                             ],
                             Applicability::MaybeIncorrect,
                         );
-                        self.err.multipart_suggestion(
-                            format!(
-                                "use the entry API to modify a `{}` for more flexibility",
-                                self.ty
-                            ),
-                            vec![
-                                // let x = val.entry(index).insert_entry(rv);
-                                (val.span.shrink_to_lo(), "let val = ".to_string()),
-                                (
-                                    val.span.shrink_to_hi().with_hi(index.span.lo()),
-                                    format!(".entry({prefix}"),
-                                ),
-                                (
-                                    index.span.shrink_to_hi().with_hi(rv.span.lo()),
-                                    ").insert_entry(".to_string(),
-                                ),
-                                (rv.span.shrink_to_hi(), ")".to_string()),
-                            ],
-                            Applicability::MaybeIncorrect,
-                        );
+                        //FIXME: in the future, include the ref_entry suggestion here if it is added
+                        //to std.
+
                         self.suggested = true;
                     } else if let hir::ExprKind::MethodCall(_path, receiver, _, sp) = expr.kind
                         && let hir::ExprKind::Index(val, index, _) = receiver.kind
                         && receiver.span == self.assign_span
                     {
-                        let gm_prefix = {
-                            let ref_depth_difference: usize;
-
-                            if let Some(index_ty) =
-                                self.infcx.tcx.typeck(val.hir_id.owner.def_id).expr_ty_opt(index)
-                            {
-                                let index_ref_depth = count_ty_refs(index_ty);
-                                ref_depth_difference = index_ref_depth - key_ref_depth; //index should
-                            //be deeper than key
-                            } else {
-                                // no type ?
-                                // FIXME: unsure how to handle this case
-                                return;
-                            };
-
-                            // remove the excessive referencing if necessary, but get_mut requires a ref
-                            match ref_depth_difference {
-                                0 => String::from("&"),
-                                n => "*".repeat(n - 1),
-                            }
-                        };
                         // val[index].path(args..);
                         self.err.multipart_suggestion(
                             format!("to modify a `{}` use `.get_mut()`", self.ty),
@@ -813,7 +811,7 @@ impl<'infcx, 'tcx> MirBorrowckCtxt<'_, 'infcx, 'tcx> {
                                 (val.span.shrink_to_lo(), "if let Some(val) = ".to_string()),
                                 (
                                     val.span.shrink_to_hi().with_hi(index.span.lo()),
-                                    format!(".get_mut({gm_prefix}"),
+                                    format!(".get_mut("),
                                 ),
                                 (
                                     index.span.shrink_to_hi().with_hi(receiver.span.hi()),

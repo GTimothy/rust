@@ -8,17 +8,17 @@ LL |         map[&0] = 1;
 help: use `.insert()` to insert a value into a `BTreeMap<u32, u32>`
    |
 LL -         map[&0] = 1;
-LL +         map.insert(*&0, 1);
+LL +         map.insert(0, 1);
+   |
+help: use the entry API to modify a `BTreeMap<u32, u32>` for more flexibility
+   |
+LL -         map[&0] = 1;
+LL +         let val = map.entry(0).insert_entry(1);
    |
 help: use `.get_mut()` to modify an existing key in a `BTreeMap<u32, u32>`
    |
 LL -         map[&0] = 1;
 LL +         if let Some(val) = map.get_mut(&0) { *val = 1; };
-   |
-help: use the entry API to modify a `BTreeMap<u32, u32>` for more flexibility
-   |
-LL -         map[&0] = 1;
-LL +         let val = map.entry(*&0).insert_entry(1);
    |
 
 error: aborting due to 1 previous error
