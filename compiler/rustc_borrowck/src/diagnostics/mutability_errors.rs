@@ -707,6 +707,20 @@ impl<'infcx, 'tcx> MirBorrowckCtxt<'_, 'infcx, 'tcx> {
                     // where
                     // Q: Hash + Equivalent<K> + ?Sized,
 
+                    /// testing if index AND key are &Q. We cannot simply test equality because the
+                    /// lifetimes differ.
+                    fn index_and_key_are_same_borrowed_type<'tcx>(
+                        index: Ty<'tcx>,
+                        key: Ty<'tcx>,
+                    ) -> bool {
+                        if let (ty::Ref(_, index_inner_ty, _), ty::Ref(_, key_inner_ty, _)) =
+                            (index.kind(), key.kind())
+                        {
+                            *index_inner_ty == *key_inner_ty
+                        } else {
+                            false
+                        }
+                    }
                     /// testing if index is &K:
                     fn index_is_borrowed_key<'tcx>(index: Ty<'tcx>, key: Ty<'tcx>) -> bool {
                         if let ty::Ref(_, inner_ty, _) = index.kind() {
@@ -730,15 +744,18 @@ impl<'infcx, 'tcx> MirBorrowckCtxt<'_, 'infcx, 'tcx> {
                         let index_ty =
                             self.infcx.tcx.typeck(val.hir_id.owner.def_id).expr_ty(index);
                         // only suggest `insert` and `entry` if K is copy/clone because of the signature.
-                        if index_is_borrowed_key(index_ty, key_type) && key_is_copyclone(key_type) {
+                        let index_is_borrowed_key = index_is_borrowed_key(index_ty, key_type);
+                        if (index_is_borrowed_key
+                            || index_and_key_are_same_borrowed_type(index_ty, key_type))
+                            && key_is_copyclone(key_type)
+                        {
+                            let offset = BytePos(index_is_borrowed_key as u32);
                             self.err.multipart_suggestion(
                                 format!("use `.insert()` to insert a value into a `{}`", self.ty),
                                 vec![
                                     // val.insert(index, rv);
                                     (
-                                        val.span
-                                            .shrink_to_hi()
-                                            .with_hi(index.span.lo() + BytePos(1)), //remove the
+                                        val.span.shrink_to_hi().with_hi(index.span.lo() + offset), //remove the
                                         //leading &
                                         format!(".insert("),
                                     ),
@@ -759,9 +776,7 @@ impl<'infcx, 'tcx> MirBorrowckCtxt<'_, 'infcx, 'tcx> {
                                     // let x = val.entry(index).insert_entry(rv);
                                     (val.span.shrink_to_lo(), "let val = ".to_string()),
                                     (
-                                        val.span
-                                            .shrink_to_hi()
-                                            .with_hi(index.span.lo() + BytePos(1)), //remove the
+                                        val.span.shrink_to_hi().with_hi(index.span.lo() + offset), //remove the
                                         //leading &
                                         format!(".entry("),
                                     ),
