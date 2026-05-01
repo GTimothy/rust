@@ -5,6 +5,7 @@ use rustc_ast::util::parser::ExprPrecedence;
 use rustc_errors::{Applicability, Diag, ErrorGuaranteed, StashKey, msg};
 use rustc_hir::def::{self, CtorKind, Namespace, Res};
 use rustc_hir::def_id::DefId;
+use rustc_hir::intravisit::Visitor;
 use rustc_hir::{self as hir, HirId, LangItem, find_attr};
 use rustc_hir_analysis::autoderef::Autoderef;
 use rustc_infer::infer::BoundRegionConversionTime;
@@ -17,7 +18,7 @@ use rustc_middle::{bug, span_bug};
 use rustc_span::def_id::LocalDefId;
 use rustc_span::{Span, sym};
 use rustc_target::spec::{AbiMap, AbiMapping};
-use rustc_trait_selection::error_reporting::traits::DefIdOrName;
+use rustc_trait_selection::error_reporting::traits::{DefIdOrName, FindExprBySpan};
 use rustc_trait_selection::infer::InferCtxtExt as _;
 use rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtExt as _;
 use tracing::{debug, instrument};
@@ -28,10 +29,8 @@ use super::{Expectation, FnCtxt, TupleArgumentsFlag};
 use crate::errors;
 use crate::method::TreatNotYetDefinedOpaques;
 
-/// Checks that it is legal to call methods of the trait corresponding
-/// to `trait_id` (this only cares about the trait, not the specific
-/// method that is called).
-pub(crate) fn check_legal_trait_for_method_call(
+/// Drop::drop check
+pub(crate) fn check_drop_trait_drop(
     tcx: TyCtxt<'_>,
     span: Span,
     receiver: Option<Span>,
@@ -46,11 +45,69 @@ pub(crate) fn check_legal_trait_for_method_call(
                 hi: receiver.shrink_to_hi().to(expr_span.shrink_to_hi()),
             }
         } else {
-            errors::ExplicitDestructorCallSugg::Empty(span)
+            let body = tcx.hir_body_owned_by(_body_id.as_local().unwrap());
+            let root_expr = body.value;
+            let mut finder = FindExprBySpan::new(expr_span, tcx);
+            finder.visit_expr(root_expr);
+
+            // eprintln!("span:{span:?}");
+            // eprintln!("expr_span:{expr_span:?}");
+            // eprintln!("ran finder too fin my spaaaaaaaan");
+            if let Some(method_call) = finder.result {
+                // eprintln!("Found expr at span: {:?}", method_call.span);
+                // eprintln!("Expr kind: {:?}", method_call.kind);
+                // eprintln!("Expr hir_id: {:?}", method_call.hir_id);
+                // Extract method call components
+                if let hir::ExprKind::Call(_fn, args) = method_call.kind {
+                    if let &[mut arg] = args {
+                        // eprintln!("current_arg_span:{:?}", (arg.span.lo(), arg.span.hi()));
+                        while let hir::Expr {
+                            kind: hir::ExprKind::AddrOf(hir::BorrowKind::Ref, _, inner),
+                            ..
+                        } = arg
+                        {
+                            arg = *inner;
+
+                            // eprintln!("current_arg_span:{:?}", (arg.span.lo(), arg.span.hi()));
+                        }
+                        errors::ExplicitDestructorCallSugg::Snippet {
+                            lo: expr_span.shrink_to_lo().to(arg.span.shrink_to_lo()),
+                            hi: arg.span.shrink_to_hi().to(expr_span.shrink_to_hi()),
+                        }
+
+                        // errors::ExplicitDestructorCallSugg::Empty(arg.span)
+                    } else {
+                        // make this suggestion appear only when a single arg is passed
+                        errors::ExplicitDestructorCallSugg::Empty(span)
+                    }
+                } else {
+                    errors::ExplicitDestructorCallSugg::Empty(span)
+                }
+            } else {
+                errors::ExplicitDestructorCallSugg::Empty(span)
+            }
         };
         return Err(tcx.dcx().emit_err(errors::ExplicitDestructorCall { span, sugg }));
     }
-    tcx.ensure_result().coherent_trait(trait_id)
+    Ok(())
+}
+
+/// Checks that it is legal to call methods of the trait corresponding
+/// to `trait_id` (this only cares about the trait, not the specific
+/// method that is called).
+pub(crate) fn check_legal_trait_for_method_call(
+    tcx: TyCtxt<'_>,
+
+    span: Span,
+
+    receiver: Option<Span>,
+    expr_span: Span,
+
+    trait_id: DefId,
+    body_id: DefId,
+) -> Result<(), ErrorGuaranteed> {
+    check_drop_trait_drop(tcx, span, receiver, expr_span, trait_id, body_id)
+        .and_then(|_| tcx.ensure_result().coherent_trait(trait_id))
 }
 
 #[derive(Debug)]
