@@ -36,7 +36,7 @@ pub(crate) fn check_drop_trait_drop(
     receiver: Option<Span>,
     expr_span: Span,
     trait_id: DefId,
-    _body_id: DefId,
+    body_id: DefId,
 ) -> Result<(), ErrorGuaranteed> {
     if tcx.is_lang_item(trait_id, LangItem::Drop) {
         let sugg = if let Some(receiver) = receiver.filter(|s| !s.is_empty()) {
@@ -45,46 +45,36 @@ pub(crate) fn check_drop_trait_drop(
                 hi: receiver.shrink_to_hi().to(expr_span.shrink_to_hi()),
             }
         } else {
-            let body = tcx.hir_body_owned_by(_body_id.as_local().unwrap());
-            let root_expr = body.value;
+            // we try to figure out if there is an explicit &mut prefix to this
+            // Drop::drop([&mut] value) call
+
             let mut finder = FindExprBySpan::new(expr_span, tcx);
-            finder.visit_expr(root_expr);
-
-            // eprintln!("span:{span:?}");
-            // eprintln!("expr_span:{expr_span:?}");
-            // eprintln!("ran finder too fin my spaaaaaaaan");
-            if let Some(method_call) = finder.result {
-                // eprintln!("Found expr at span: {:?}", method_call.span);
-                // eprintln!("Expr kind: {:?}", method_call.kind);
-                // eprintln!("Expr hir_id: {:?}", method_call.hir_id);
-                // Extract method call components
-                if let hir::ExprKind::Call(_fn, args) = method_call.kind {
-                    if let &[mut arg] = args {
-                        // eprintln!("current_arg_span:{:?}", (arg.span.lo(), arg.span.hi()));
-                        while let hir::Expr {
-                            kind: hir::ExprKind::AddrOf(hir::BorrowKind::Ref, _, inner),
-                            ..
-                        } = arg
-                        {
-                            arg = *inner;
-
-                            // eprintln!("current_arg_span:{:?}", (arg.span.lo(), arg.span.hi()));
-                        }
-                        errors::ExplicitDestructorCallSugg::Snippet {
-                            lo: expr_span.shrink_to_lo().to(arg.span.shrink_to_lo()),
-                            hi: arg.span.shrink_to_hi().to(expr_span.shrink_to_hi()),
-                        }
-
-                        // errors::ExplicitDestructorCallSugg::Empty(arg.span)
-                    } else {
-                        // make this suggestion appear only when a single arg is passed
-                        errors::ExplicitDestructorCallSugg::Empty(span)
-                    }
-                } else {
-                    errors::ExplicitDestructorCallSugg::Empty(span)
-                }
-            } else {
-                errors::ExplicitDestructorCallSugg::Empty(span)
+            match body_id.as_local().and_then(|body| {
+                finder.visit_expr(tcx.hir_body_owned_by(body).value);
+                finder.result
+            }) {
+                Some(hir::Expr {
+                    kind:
+                        hir::ExprKind::Call(
+                            _,
+                            [
+                                hir::Expr {
+                                    kind:
+                                        hir::ExprKind::AddrOf(
+                                            hir::BorrowKind::Ref,
+                                            hir::Mutability::Mut,
+                                            arg,
+                                        ),
+                                    ..
+                                },
+                            ],
+                        ),
+                    ..
+                }) => errors::ExplicitDestructorCallSugg::Snippet {
+                    lo: expr_span.shrink_to_lo().to(arg.span.shrink_to_lo()),
+                    hi: arg.span.shrink_to_hi().to(expr_span.shrink_to_hi()),
+                },
+                _ => errors::ExplicitDestructorCallSugg::Empty(span),
             }
         };
         return Err(tcx.dcx().emit_err(errors::ExplicitDestructorCall { span, sugg }));
