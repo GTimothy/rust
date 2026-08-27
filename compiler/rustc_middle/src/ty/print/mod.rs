@@ -11,6 +11,8 @@ use crate::ty::{self, GenericArg, Ty, TyCtxt};
 // `pretty` is a separate module only for organization.
 mod pretty;
 pub use self::pretty::*;
+mod compact;
+pub use self::compact::*;
 use super::Lift;
 
 pub type PrintError = std::fmt::Error;
