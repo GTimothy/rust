@@ -8,6 +8,8 @@ use rustc_span::{Symbol, symbol};
 use crate::ty::print::{PrettyPrinter, PrintError, Printer};
 use crate::ty::{self, GenericArg, Ty, TyCtxt};
 
+/// A printer implementing mostly `PrettyPrinter` but which takes into account a `use_site` in order
+/// to find minimized paths to a type and it's arguments.
 struct ScopeAwareTyPrinter<'tcx> {
     tcx: TyCtxt<'tcx>,
     use_site: rustc_hir::def_id::LocalDefId, // module accessibility is checked against
@@ -74,12 +76,13 @@ impl<'tcx> super::Printer<'tcx> for ScopeAwareTyPrinter<'tcx> {
                 find_visible_type_name(self.tcx, self.use_site, ty, def_id)
         {
             self.path.push_str(&path);
+            // skip processing any generic arguments when the alias match already accounts for them
             if !is_alias && !args.is_empty() {
                 return self.generic_delimiters(|cx| cx.comma_sep(args.iter().copied()));
             }
             return Ok(());
         }
-
+        // fallback on pretty printing.
         self.pretty_print_type(ty)
     }
     fn print_dyn_existential(
@@ -111,9 +114,7 @@ impl<'tcx> super::Printer<'tcx> for ScopeAwareTyPrinter<'tcx> {
         self.pretty_print_path_with_impl(
             |cx| {
                 print_prefix(cx)?;
-
                 cx.path.push_str("::");
-
                 Ok(())
             },
             self_ty,
@@ -143,6 +144,12 @@ impl<'tcx> super::Printer<'tcx> for ScopeAwareTyPrinter<'tcx> {
     }
 }
 
+/// find an alias, definition or use import of a *nameable* `Ty` in the n, n-1 and n+1
+/// module hierarchy where n is the module where `use_site` is located.
+/// Only suggests shorthand to `Ty` that are visible from `use_site`.
+/// If an alias is found it includes the generic arguments; otherwise this also reduces each generic
+/// argument in turn.
+/// This allows for very short, valid paths for suggestions.
 pub fn scope_aware_ty_string<'tcx>(
     tcx: TyCtxt<'tcx>,
     use_site: LocalDefId,
@@ -152,6 +159,15 @@ pub fn scope_aware_ty_string<'tcx>(
     p.print_type(ty).unwrap();
     p.path
 }
+
+/// If a match is found, returns a types' path `String` and an alias `bool` that is true if the
+/// `String` is an alias.
+/// The path is greedily looked for in the `use_site` module, then the module's children, then
+/// parent module and the parent's children.
+/// The alias `bool` is information useful when deciding to process any generic arguments of a `Ty`
+/// (i.e. when alias is `true`, we may skip the generic arguments).
+///
+/// Returns None if no match is found.
 fn find_visible_type_name<'tcx>(
     tcx: TyCtxt<'tcx>,
     use_site: LocalDefId,
@@ -207,7 +223,8 @@ fn find_visible_type_name<'tcx>(
     None
 }
 
-/// Returns the matching child's name and whether it's a `TyAlias` hit (vs. a direct def/re-export).
+/// Look for a match for `ty` (with DefId `def_id`) in `module` that is visible from `use_site`.
+/// Returns the matching child's name and whether it's a `TyAlias` hit or not.
 fn find_match_in<'tcx>(
     tcx: TyCtxt<'tcx>,
     module: LocalDefId,
